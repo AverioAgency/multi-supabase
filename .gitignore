@@ -1,0 +1,6 @@
+# Generated secrets — NEVER commit
+deploy/.install-credentials
+
+# Local editor / OS cruft
+.DS_Store
+*.log

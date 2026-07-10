@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-project Supabase override — rendered by install.sh into each stack as
+# `docker-compose.override.yml`. Compose merges it on top of the upstream
+# supabase/docker `docker-compose.yml`.
+#
+# It does three jobs so that MANY Supabase stacks can coexist on one host next
+# to Koro without colliding:
+#
+#   1. Re-names every container to `${STACK}-<svc>` (the upstream compose
+#      hard-codes `supabase-db`, `supabase-kong`, … — two stacks with those
+#      names would clash). `${STACK}` is unique per project (e.g. `munter`).
+#   2. Joins Kong + Studio to the shared external `edge` network so the
+#      existing Koro Traefik can route to them. Everything else stays on the
+#      stack-local default network — fully isolated per project.
+#   3. Adds Traefik labels: Kong → https://${DB_HOST}, Studio → https://
+#      ${STUDIO_HOST} (behind basic auth). Router/service/middleware names are
+#      ${STACK}-prefixed so two stacks never register the same Traefik object.
+#
+# Placeholders substituted by install.sh: __STACK__, __DB_HOST__,
+# __STUDIO_HOST__, __STUDIO_AUTH__.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  db:
+    container_name: __STACK__-db
+
+  analytics:
+    container_name: __STACK__-analytics
+
+  vector:
+    container_name: __STACK__-vector
+
+  supavisor:
+    container_name: __STACK__-supavisor
+
+  rest:
+    container_name: __STACK__-rest
+
+  auth:
+    container_name: __STACK__-auth
+
+  realtime:
+    container_name: realtime-dev.__STACK__-realtime
+
+  storage:
+    container_name: __STACK__-storage
+
+  imgproxy:
+    container_name: __STACK__-imgproxy
+
+  meta:
+    container_name: __STACK__-meta
+
+  functions:
+    container_name: __STACK__-edge-functions
+
+  kong:
+    container_name: __STACK__-kong
+    networks:
+      - default
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - "traefik.http.routers.__STACK__-db.rule=Host(`__DB_HOST__`)"
+      - traefik.http.routers.__STACK__-db.entrypoints=websecure
+      - traefik.http.routers.__STACK__-db.tls=true
+      - traefik.http.routers.__STACK__-db.tls.certresolver=le
+      - traefik.http.services.__STACK__-db.loadbalancer.server.port=8000
+
+  studio:
+    container_name: __STACK__-studio
+    networks:
+      - default
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - "traefik.http.routers.__STACK__-studio.rule=Host(`__STUDIO_HOST__`)"
+      - traefik.http.routers.__STACK__-studio.entrypoints=websecure
+      - traefik.http.routers.__STACK__-studio.tls=true
+      - traefik.http.routers.__STACK__-studio.tls.certresolver=le
+      - traefik.http.services.__STACK__-studio.loadbalancer.server.port=3000
+      - traefik.http.routers.__STACK__-studio.middlewares=__STACK__-studio-auth
+      - "traefik.http.middlewares.__STACK__-studio-auth.basicauth.users=__STUDIO_AUTH__"
+
+networks:
+  edge:
+    external: true
