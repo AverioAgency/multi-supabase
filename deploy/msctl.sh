@@ -83,6 +83,34 @@ do_logs(){
   ( cd "$STACKS_ROOT/$s" && eval "$c logs --tail 200 $follow $svc" )
 }
 
+# Tear down ONE stack: containers + volumes + stack dir + ready-marker.
+# Hard-guarded so it can NEVER touch Koro (project supabase-stack / supabase-*).
+do_reset(){
+  local s="$1"
+  [ -n "$s" ] || { warn "reset <stack> — Stack angeben."; exit 1; }
+  case "$s" in
+    supabase|supabase-stack|koro*|traefik)
+      warn "VERWEIGERT: '$s' gehört zu Koro/Traefik — reset betrifft nur multi-supabase-Stacks."; exit 1 ;;
+  esac
+  local proj="sb-$s"
+  hdr "reset $s  (Projekt $proj)"
+  info "Container:"; docker ps -a --filter "label=com.docker.compose.project=$proj" --format '  {{.Names}}' || true
+  info "Volumes:";   docker volume ls -q --filter "name=^${proj}_" | sed 's/^/  /' || true
+  # 1) sauber via compose runter (inkl. Volumes), falls Dir noch da
+  if [ -d "$STACKS_ROOT/$s" ]; then
+    local c; c="$(compose_for "$s" 2>/dev/null || true)"
+    [ -n "$c" ] && ( cd "$STACKS_ROOT/$s" && eval "$c down -v" ) 2>/dev/null || true
+  fi
+  # 2) Sicherheitsnetz: alles mit DEM Compose-Projekt-Label entfernen
+  #    (Label ist eindeutig sb-<stack>, kann Koro nicht treffen)
+  docker ps -aq --filter "label=com.docker.compose.project=$proj" | xargs -r docker rm -f
+  docker volume ls -q --filter "name=^${proj}_" | xargs -r docker volume rm
+  # 3) Stack-Verzeichnis + Ready-Marker weg → nächster install.sh baut frisch
+  rm -rf "$STACKS_ROOT/$s"
+  ok "$s vollständig entfernt (Container + Volumes + Dir). Koro unberührt."
+  info "Nächster 'sudo ./deploy/install.sh' setzt '$s' frisch auf."
+}
+
 CMD="${1:-status}"; shift || true
 case "$CMD" in
   status)  do_status ;;
@@ -90,5 +118,6 @@ case "$CMD" in
   stop)    for s in $(resolve_targets "${1:-}"); do do_stop  "$s"; done ;;
   restart) for s in $(resolve_targets "${1:-}"); do do_stop "$s"; do_start "$s"; done ;;
   logs)    do_logs "$@" ;;
-  *) printf 'Usage: msctl status|start|stop|restart <stack|all> | logs <stack> [svc] [-f]\n'; exit 1 ;;
+  reset)   for s in $(resolve_targets "${1:-}"); do do_reset "$s"; done ;;
+  *) printf 'Usage: msctl status|start|stop|restart <stack|all> | logs <stack> [svc] [-f] | reset <stack|all>\n'; exit 1 ;;
 esac

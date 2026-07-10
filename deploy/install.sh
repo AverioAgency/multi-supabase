@@ -282,8 +282,12 @@ PY
   done
 
   info "Starte restlichen Stack ($STACK) …"
-  ( cd "$STACK_DIR" && "${SB_COMPOSE[@]}" up -d ) >>"$LOGFILE" 2>&1 \
-      && ok "$STACK-Stack hochgefahren" || warn "$STACK up -d meldete Fehler (siehe Log)"
+  UP_OK=0
+  if ( cd "$STACK_DIR" && "${SB_COMPOSE[@]}" up -d ) >>"$LOGFILE" 2>&1; then
+    UP_OK=1; ok "$STACK-Stack hochgefahren"
+  else
+    warn "$STACK up -d meldete Fehler (siehe Log) — Stack bleibt UNvollständig, Marker wird NICHT gesetzt"
+  fi
 
   # ── Deterministically attach Kong + Studio to edge (override merge of the
   #    networks: block can be flaky depending on compose version) ────────────
@@ -299,12 +303,19 @@ PY
   done
 
   # Mark this stack as successfully set up (drives idempotency on re-runs).
-  # Written only if kong actually came up.
-  if docker inspect "$STACK-kong" >/dev/null 2>&1; then
-    printf 'ready %s\n' "$TS" > "$STACK_DIR/.multi-supabase-ready"
+  # ONLY when `up` fully succeeded AND every declared service is running — so a
+  # partial start (e.g. some containers dead) is NOT treated as "done" and the
+  # next run rebuilds it. Count expected vs. running services for this project.
+  EXPECTED="$(cd "$STACK_DIR" && "${SB_COMPOSE[@]}" config --services 2>/dev/null | wc -l | tr -d ' ')"
+  RUNNING="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' | wc -l | tr -d ' ')"
+  if [ "$UP_OK" = 1 ] && [ "$EXPECTED" -gt 0 ] && [ "$RUNNING" -ge "$EXPECTED" ]; then
+    printf 'ready %s  (%s/%s services)\n' "$TS" "$RUNNING" "$EXPECTED" > "$STACK_DIR/.multi-supabase-ready"
+    ok "$STACK fertig →  API: https://$DB_HOST   Studio: https://$STUDIO_HOST  ($RUNNING/$EXPECTED laufen)"
+  else
+    rm -f "$STACK_DIR/.multi-supabase-ready"
+    warn "$STACK UNvollständig ($RUNNING/$EXPECTED Services laufen) — kein Ready-Marker. Nächster Run baut neu auf."
+    warn "Logs:  ./deploy/msctl.sh logs $STACK    (oder: docker compose -p $PROJECT logs)"
   fi
-
-  ok "$STACK fertig →  API: https://$DB_HOST   Studio: https://$STUDIO_HOST"
 done < "$PROJECTS_CONF"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
