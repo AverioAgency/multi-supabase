@@ -110,6 +110,52 @@ sudo msctl status
 2. DNS für beide Hosts auf den Server zeigen lassen.
 3. `sudo ./deploy/install.sh` — nur das neue Projekt wird aufgesetzt.
 
+## OAuth-Provider (Apple, Google, GitHub)
+
+Self-hosted Supabase liefert alle Social-Provider **deaktiviert** aus — das
+Studio kann sie nicht selbst anschalten (anders als Supabase Cloud). Aktivierung
+läuft über eine Provider-Datei pro Stack, die `install.sh` in den auth-Service
+(GoTrue) verdrahtet.
+
+### Apple
+
+1. **Client-Secret-JWT erzeugen** (Apple will kein statisches Secret, sondern
+   ein signiertes JWT aus deinem `.p8`-Key; läuft nach max. 180 Tagen ab):
+
+   ```bash
+   ./deploy/gen-apple-secret.sh \
+     --team-id ABCDE12345 \
+     --key-id  KEY1234567 \
+     --services-id app.munter.web \
+     --p8 ~/AuthKey_KEY1234567.p8
+   ```
+
+   Gibt das JWT aus.
+
+2. **Provider-Datei anlegen** (gitignored):
+
+   ```bash
+   cp projects/PROVIDERS.example.env projects/munter.providers.env
+   # eintragen:
+   #   APPLE_ENABLED=true
+   #   APPLE_CLIENT_ID=app.munter.web        (deine Services-ID)
+   #   APPLE_SECRET=<JWT aus Schritt 1>
+   ```
+
+3. **In Apple** die Return-URL der Services-ID auf exakt diese setzen:
+   `https://db.munter.app/auth/v1/callback`
+
+4. **Anwenden** (startet nur diesen Stack neu, Koro unberührt):
+
+   ```bash
+   sudo ./deploy/install.sh
+   ```
+
+   `install.sh` meldet dann `OAuth-Provider aktiv: APPLE`. Nach ~180 Tagen JWT
+   neu erzeugen und `APPLE_SECRET` ersetzen → `install.sh` erneut.
+
+Google/GitHub gehen analog über dieselbe Datei (Zeilen in der Vorlage).
+
 ## Ein Projekt entfernen
 
 ```bash

@@ -1,6 +1,11 @@
 # Generated secrets — NEVER commit
 deploy/.install-credentials
 
+# Per-stack OAuth provider secrets (Apple/Google/GitHub client secrets)
+projects/*.providers.env
+# but keep the example template
+!projects/PROVIDERS.example.env
+
 # Local editor / OS cruft
 .DS_Store
 *.log

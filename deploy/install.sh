@@ -283,6 +283,75 @@ PY
     NEW_COUNT=$((NEW_COUNT+1))
   fi
 
+  # ── OAuth-Provider verdrahten (idempotent, läuft bei JEDEM Run) ───────────
+  # Der upstream auth-Service hat keine Apple-Zeilen und kommentiert Google/
+  # GitHub aus. Wir schreiben deshalb einen eigenen `auth: environment:`-Block
+  # in den Override, der die GOTRUE_EXTERNAL_<PROVIDER>_*-Vars direkt setzt.
+  # Quelle: projects/<stack>.providers.env (gitignored). Fehlt die Datei →
+  # kein Provider-Block (alles bleibt beim upstream-Default = aus).
+  PROV_FILE="$REPO_DIR/projects/${STACK}.providers.env"
+  OVERRIDE="$STACK_DIR/docker-compose.override.yml"
+  if [ -f "$PROV_FILE" ]; then
+    python3 - "$OVERRIDE" "$PROV_FILE" "https://$DB_HOST/auth/v1/callback" <<'PY'
+import sys, re
+override, provfile, redirect = sys.argv[1:4]
+
+# parse KEY=VALUE from the providers env (ignore comments/blanks)
+env = {}
+for line in open(provfile):
+    line = line.strip()
+    if not line or line.startswith('#') or '=' not in line:
+        continue
+    k, v = line.split('=', 1)
+    env[k.strip()] = v.strip()
+
+def on(key):
+    return env.get(key, '').lower() in ('true', '1', 'yes')
+
+# build GOTRUE_* env lines for each enabled provider
+lines = []
+def add(k, v):
+    # escape $ for compose interpolation so a $ in a secret is not treated as a var
+    v = v.replace('$', '$$')
+    lines.append(f'      {k}: "{v}"')
+
+for prov, gname in (('APPLE','APPLE'), ('GOOGLE','GOOGLE'), ('GITHUB','GITHUB')):
+    if on(f'{prov}_ENABLED') and env.get(f'{prov}_CLIENT_ID') and env.get(f'{prov}_SECRET'):
+        add(f'GOTRUE_EXTERNAL_{gname}_ENABLED', 'true')
+        add(f'GOTRUE_EXTERNAL_{gname}_CLIENT_ID', env[f'{prov}_CLIENT_ID'])
+        add(f'GOTRUE_EXTERNAL_{gname}_SECRET', env[f'{prov}_SECRET'])
+        add(f'GOTRUE_EXTERNAL_{gname}_REDIRECT_URI', redirect)
+
+text = open(override).read()
+# strip any previously injected provider block (between the markers)
+text = re.sub(r'\n# >>> multi-supabase providers >>>.*?# <<< multi-supabase providers <<<\n',
+              '\n', text, flags=re.S)
+
+if lines:
+    block = ('\n# >>> multi-supabase providers >>>\n'
+             '  auth:\n'
+             '    environment:\n'
+             + '\n'.join(lines) + '\n'
+             '# <<< multi-supabase providers <<<\n')
+    # insert the block right after the top-level `services:` line
+    if re.search(r'^services:\s*$', text, flags=re.M):
+        text = re.sub(r'(^services:\s*$)', r'\1' + block, text, count=1, flags=re.M)
+    else:
+        text = 'services:' + block + text
+    print("PROVIDERS:" + ",".join(sorted(
+        p for p in ('APPLE','GOOGLE','GITHUB')
+        if on(f'{p}_ENABLED') and env.get(f'{p}_CLIENT_ID') and env.get(f'{p}_SECRET'))))
+else:
+    print("PROVIDERS:none")
+
+open(override, 'w').write(text)
+PY
+    _prov="$(cd "$STACK_DIR" && grep -o 'GOTRUE_EXTERNAL_[A-Z]*_ENABLED' docker-compose.override.yml | sed 's/GOTRUE_EXTERNAL_//;s/_ENABLED//' | sort -u | tr '\n' ' ')"
+    [ -n "$_prov" ] && ok "OAuth-Provider aktiv: $_prov" || warn "Provider-Datei da, aber kein Provider vollständig (CLIENT_ID/SECRET?) — keiner aktiviert"
+  else
+    info "Keine Provider-Datei ($PROV_FILE) — nur E-Mail-Auth. (Vorlage: projects/PROVIDERS.example.env)"
+  fi
+
   # ── Bring the stack up (DB first, then the rest) ──────────────────────────
   info "Starte Postgres ($STACK-db) — Erst-Init kann dauern …"
   ( cd "$STACK_DIR" && "${SB_COMPOSE[@]}" up -d db ) >>"$LOGFILE" 2>&1 \
