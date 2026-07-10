@@ -3,56 +3,30 @@
 # `docker-compose.override.yml`. Compose merges it on top of the upstream
 # supabase/docker `docker-compose.yml`.
 #
-# It does three jobs so that MANY Supabase stacks can coexist on one host next
-# to Koro without colliding:
-#
-#   1. Re-names every container to `${STACK}-<svc>` (the upstream compose
-#      hard-codes `supabase-db`, `supabase-kong`, … — two stacks with those
-#      names would clash). `${STACK}` is unique per project (e.g. `munter`).
-#   2. Joins Kong + Studio to the shared external `edge` network so the
-#      existing Koro Traefik can route to them. Everything else stays on the
-#      stack-local default network — fully isolated per project.
-#   3. Adds Traefik labels: Kong → https://${DB_HOST}, Studio → https://
+# Mirrors Koro's proven override: it ONLY touches kong + studio.
+#   1. Joins Kong + Studio to the shared external `edge` network so the
+#      existing Koro Traefik can route to them.
+#   2. Adds Traefik labels: Kong → https://${DB_HOST}, Studio → https://
 #      ${STUDIO_HOST} (behind basic auth). Router/service/middleware names are
 #      ${STACK}-prefixed so two stacks never register the same Traefik object.
+#
+# Unique CONTAINER names come from two other mechanisms, NOT from this file:
+#   - the compose project name `sb-${STACK}` (install.sh passes `-p`), and
+#   - install.sh strips the upstream hard-coded `container_name:` lines so the
+#     project prefix actually applies. (If we re-declared every service here we
+#     would resurrect services like `vector`/`analytics` that don't exist in the
+#     current upstream compose → "has neither an image nor a build context".)
 #
 # Placeholders substituted by install.sh: __STACK__, __DB_HOST__,
 # __STUDIO_HOST__, __STUDIO_AUTH__.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
+  # Give the three services we address by name a stable, unique container_name.
+  # install.sh has stripped the upstream `supabase-*` container_name lines, so
+  # these are the only explicit names — no collision with Koro or other stacks.
   db:
     container_name: __STACK__-db
-
-  analytics:
-    container_name: __STACK__-analytics
-
-  vector:
-    container_name: __STACK__-vector
-
-  supavisor:
-    container_name: __STACK__-supavisor
-
-  rest:
-    container_name: __STACK__-rest
-
-  auth:
-    container_name: __STACK__-auth
-
-  realtime:
-    container_name: realtime-dev.__STACK__-realtime
-
-  storage:
-    container_name: __STACK__-storage
-
-  imgproxy:
-    container_name: __STACK__-imgproxy
-
-  meta:
-    container_name: __STACK__-meta
-
-  functions:
-    container_name: __STACK__-edge-functions
 
   kong:
     container_name: __STACK__-kong

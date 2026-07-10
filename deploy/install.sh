@@ -122,8 +122,10 @@ while read -r STACK DB_HOST STUDIO_HOST _rest || [ -n "$STACK" ]; do
 
   step "Projekt: $STACK  ($DB_HOST · $STUDIO_HOST)"
 
-  # ── Idempotency: existing stack? reuse, don't regenerate secrets ──────────
-  if [ -f "$STACK_DIR/.env" ] && grep -q '^ANON_KEY=' "$STACK_DIR/.env"; then
+  # ── Idempotency: a stack counts as "existing" only if a PREVIOUS run fully
+  #    succeeded (marker file). A half-built dir from a failed run is rebuilt
+  #    from scratch, so re-running after an error is self-healing.
+  if [ -f "$STACK_DIR/.multi-supabase-ready" ] && grep -q '^ANON_KEY=' "$STACK_DIR/.env" 2>/dev/null; then
     ok "Stack existiert bereits ($STACK_DIR) — Secrets bleiben, bringe nur hoch."
     ANON_KEY="$(grep -E '^ANON_KEY=' "$STACK_DIR/.env" | head -1 | cut -d= -f2-)"
     SERVICE_ROLE_KEY="$(grep -E '^SERVICE_ROLE_KEY=' "$STACK_DIR/.env" | head -1 | cut -d= -f2-)"
@@ -131,9 +133,26 @@ while read -r STACK DB_HOST STUDIO_HOST _rest || [ -n "$STACK" ]; do
     FRESH=0
   else
     FRESH=1
+    # Clean up any leftovers from a previous FAILED attempt for this stack, so
+    # the rebuild is truly fresh (containers, volumes, half-copied dir).
+    if docker ps -aq --filter "name=^${STACK}-" | grep -q . 2>/dev/null; then
+      info "Räume Reste eines früheren Fehlversuchs für '$STACK' auf …"
+      ( cd "$STACK_DIR" 2>/dev/null && docker compose -p "$PROJECT" down -v ) >>"$LOGFILE" 2>&1 || true
+      docker ps -aq --filter "name=^${STACK}-" | xargs -r docker rm -f >>"$LOGFILE" 2>&1 || true
+      docker volume ls -q --filter "name=^${PROJECT}_" | xargs -r docker volume rm >>"$LOGFILE" 2>&1 || true
+    fi
     run "Supabase-Docker nach $STACK_DIR kopieren" \
         bash -c "rm -rf '$STACK_DIR' && cp -r '$SUPABASE_SRC/docker' '$STACK_DIR'"
     cp "$STACK_DIR/.env.example" "$STACK_DIR/.env"
+
+    # The upstream compose hard-codes container_name: supabase-* on every
+    # service, which would collide between stacks AND ignore our project prefix.
+    # Strip them so compose falls back to `sb-<stack>-<svc>` naming; the three
+    # services we address by name (db/kong/studio) get a clean explicit name
+    # back via the override.
+    sed -i -E '/^[[:space:]]*container_name:[[:space:]]*(supabase-|realtime-dev\.supabase-)/d' \
+        "$STACK_DIR/docker-compose.yml"
+    ok "Upstream container_name-Zeilen entfernt (Projekt-Präfix sb-${STACK} greift)"
 
     POSTGRES_PASSWORD="$(openssl rand -hex 32)"
     JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')"
@@ -163,7 +182,14 @@ while read -r STACK DB_HOST STUDIO_HOST _rest || [ -n "$STACK" ]; do
     set_env "$SB" POSTGRES_PORT 5432
     ok "Stack-.env geschrieben ($SB)"
 
-    # persist credentials for you
+    # persist credentials for you — drop any stale block for this stack first
+    if grep -q "^# === $STACK " "$CRED_FILE" 2>/dev/null; then
+      awk -v s="# === $STACK " '
+        $0 ~ ("^" s) {skip=1; next}
+        /^# === / && skip {skip=0}
+        !skip {print}
+      ' "$CRED_FILE" > "$CRED_FILE.tmp" && mv "$CRED_FILE.tmp" "$CRED_FILE"
+    fi
     {
       printf '\n# === %s  (%s)  generated %s ===\n' "$STACK" "$DB_HOST" "$TS"
       printf 'DB_HOST=%s\nSTUDIO_HOST=%s\n' "$DB_HOST" "$STUDIO_HOST"
@@ -228,6 +254,12 @@ PY
       fi
     fi
   done
+
+  # Mark this stack as successfully set up (drives idempotency on re-runs).
+  # Written only if kong actually came up.
+  if docker inspect "$STACK-kong" >/dev/null 2>&1; then
+    printf 'ready %s\n' "$TS" > "$STACK_DIR/.multi-supabase-ready"
+  fi
 
   ok "$STACK fertig →  API: https://$DB_HOST   Studio: https://$STUDIO_HOST"
 done < "$PROJECTS_CONF"
