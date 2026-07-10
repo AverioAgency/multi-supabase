@@ -215,10 +215,26 @@ PY
     set_env "$SB" DASHBOARD_PASSWORD "$DASHBOARD_PASSWORD"
     set_env "$SB" SECRET_KEY_BASE   "$SECRET_KEY_BASE"
     set_env "$SB" VAULT_ENC_KEY     "$VAULT_ENC_KEY"
-    # Public URLs / API host so Studio + links resolve correctly
+    # Public URLs / API host so Studio, Auth links + Functions resolve correctly.
     set_env "$SB" SUPABASE_PUBLIC_URL "https://$DB_HOST"
-    set_env "$SB" API_EXTERNAL_URL     "https://$DB_HOST"
-    set_env "$SB" SITE_URL             "https://$STUDIO_HOST"
+    # GoTrue/Auth: the upstream default is http://localhost:8000/auth/v1 — it
+    # expects the /auth/v1 PATH, not just the host. Without it, auth callbacks,
+    # magic links and the JWT issuer are wrong.
+    set_env "$SB" API_EXTERNAL_URL     "https://$DB_HOST/auth/v1"
+    # SITE_URL = default redirect target for YOUR end-user app (not Studio).
+    # No app yet → point at the API host; override per project later.
+    set_env "$SB" SITE_URL             "https://$DB_HOST"
+    set_env "$SB" ADDITIONAL_REDIRECT_URLS ""
+    # No real mail server in this stack (upstream default SMTP_HOST is the
+    # non-existent 'supabase-mail'). Auto-confirm e-mail signups so users are
+    # usable immediately; otherwise signup "works" but nobody can ever log in.
+    # Set up real SMTP + flip this to false when you want confirmation mails.
+    set_env "$SB" ENABLE_EMAIL_SIGNUP      true
+    set_env "$SB" ENABLE_EMAIL_AUTOCONFIRM true
+    set_env "$SB" DISABLE_SIGNUP           false
+    # Edge Functions: don't force JWT on every function (matches upstream
+    # default); functions opt into verification themselves.
+    set_env "$SB" FUNCTIONS_VERIFY_JWT     false
     set_env "$SB" STUDIO_DEFAULT_PROJECT "$STACK"
     # Keep Postgres/pooler ports off the host — each stack is reached via Kong
     # through Traefik only; no host-port collisions between stacks.
