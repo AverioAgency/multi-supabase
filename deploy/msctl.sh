@@ -94,16 +94,20 @@ do_reset(){
   esac
   local proj="sb-$s"
   hdr "reset $s  (Projekt $proj)"
-  info "Container:"; docker ps -a --filter "label=com.docker.compose.project=$proj" --format '  {{.Names}}' || true
-  info "Volumes:";   docker volume ls -q --filter "name=^${proj}_" | sed 's/^/  /' || true
   # 1) sauber via compose runter (inkl. Volumes), falls Dir noch da
   if [ -d "$STACKS_ROOT/$s" ]; then
     local c; c="$(compose_for "$s" 2>/dev/null || true)"
-    [ -n "$c" ] && ( cd "$STACKS_ROOT/$s" && eval "$c down -v" ) 2>/dev/null || true
+    [ -n "$c" ] && { info "compose down -v …"; ( cd "$STACKS_ROOT/$s" && eval "$c down -v" ) 2>/dev/null || true; }
   fi
-  # 2) Sicherheitsnetz: alles mit DEM Compose-Projekt-Label entfernen
-  #    (Label ist eindeutig sb-<stack>, kann Koro nicht treffen)
-  docker ps -aq --filter "label=com.docker.compose.project=$proj" | xargs -r docker rm -f
+  # 2) Sicherheitsnetz A: alles mit DEM Compose-Projekt-Label entfernen
+  #    (Label ist eindeutig sb-<stack>, kann Koro nicht treffen — auch
+  #    created/restarting/exited Container werden mit -f gekillt)
+  local by_label; by_label="$(docker ps -aq --filter "label=com.docker.compose.project=$proj")"
+  [ -n "$by_label" ] && { info "entferne per Projekt-Label:"; docker rm -f $by_label | sed 's/^/  /'; }
+  # 3) Sicherheitsnetz B: verwaiste Container mit Namenspräfix <stack>-*
+  #    (z.B. munter-kong/-db/-studio aus dem Override) — guard: NIE supabase-*.
+  local by_name; by_name="$(docker ps -a --format '{{.Names}}' | grep -E "^${s}-" || true)"
+  [ -n "$by_name" ] && { info "entferne per Namenspräfix ${s}-:"; echo "$by_name" | grep -vE '^supabase-' | xargs -r docker rm -f | sed 's/^/  /'; }
   docker volume ls -q --filter "name=^${proj}_" | xargs -r docker volume rm
   # 3) Stack-Verzeichnis + Ready-Marker weg → nächster install.sh baut frisch
   rm -rf "$STACKS_ROOT/$s"
