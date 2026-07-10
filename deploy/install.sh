@@ -154,6 +154,49 @@ while read -r STACK DB_HOST STUDIO_HOST _rest || [ -n "$STACK" ]; do
         "$STACK_DIR/docker-compose.yml"
     ok "Upstream container_name-Zeilen entfernt (Projekt-Präfix sb-${STACK} greift)"
 
+    # Remove the two HOST port bindings the upstream compose publishes:
+    #   kong      → ${KONG_HTTP_PORT}:8000 , ${KONG_HTTPS_PORT}:8443
+    #   supavisor → ${POSTGRES_PORT}:5432  , ${POOLER_PROXY_PORT_TRANSACTION}:6543
+    # Koro already owns those host ports (8000/8443/5432/6543). These stacks are
+    # reached ONLY via Traefik (by domain) + internally over `edge`, so they need
+    # no host ports at all → no "port is already allocated" clash. We delete the
+    # published-port list items and the resulting empty `ports:` keys.
+    python3 - "$STACK_DIR/docker-compose.yml" <<'PY'
+import sys, re
+p = sys.argv[1]
+lines = open(p).read().splitlines(keepends=True)
+out = []
+# drop list items that publish a host port for the known upstream ports
+drop_item = re.compile(
+    r'^\s*-\s*\$\{(KONG_HTTP_PORT|KONG_HTTPS_PORT|POSTGRES_PORT|POOLER_PROXY_PORT_TRANSACTION)\}\s*:\s*\d+',
+)
+kept = [l for l in lines if not drop_item.match(l)]
+# now remove any `ports:` key that has no list items left under it
+res = []
+i = 0
+while i < len(kept):
+    l = kept[i]
+    if re.match(r'^\s*ports:\s*$', l):
+        indent = len(l) - len(l.lstrip())
+        j = i + 1
+        has_item = False
+        while j < len(kept):
+            nxt = kept[j]
+            if nxt.strip() == '':
+                j += 1; continue
+            nindent = len(nxt) - len(nxt.lstrip())
+            if nindent > indent and nxt.lstrip().startswith('-'):
+                has_item = True
+            break
+        if not has_item:
+            i += 1        # skip the orphan `ports:` line
+            continue
+    res.append(l)
+    i += 1
+open(p, 'w').write(''.join(res))
+PY
+    ok "Host-Port-Bindungen (kong 8000/8443, pooler 5432/6543) entfernt — keine Kollision mit Koro"
+
     POSTGRES_PASSWORD="$(openssl rand -hex 32)"
     JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')"
     ANON_KEY="$(gen_jwt anon "$JWT_SECRET")"
